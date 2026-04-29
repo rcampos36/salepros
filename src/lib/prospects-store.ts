@@ -1,5 +1,6 @@
 import "server-only";
 
+import { Redis } from "@upstash/redis";
 import fs from "fs/promises";
 import path from "path";
 import type {
@@ -91,6 +92,34 @@ function normalizeDealOutcome(o: Record<string, unknown>): ProspectDealOutcome {
 }
 
 const DATA_FILE = path.join(process.cwd(), "data", "prospects.json");
+const REDIS_KEY = "sales-prospects:v1";
+
+function usesRedisBackend(): boolean {
+  return Boolean(
+    process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+  );
+}
+
+function isVercelDeployment(): boolean {
+  return Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+}
+
+/** Serverless hosts cannot persist repo files — Redis required when VERCEL is set. */
+function assertProspectsWritableOnVercel(): void {
+  if (isVercelDeployment() && !usesRedisBackend()) {
+    throw new Error(
+      "Prospects cannot be saved on Vercel without Redis. Add UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN from your Upstash Redis database (REST API tab), redeploy, then try again."
+    );
+  }
+}
+
+let redisSingleton: Redis | null = null;
+function getRedis(): Redis {
+  if (!redisSingleton) {
+    redisSingleton = Redis.fromEnv();
+  }
+  return redisSingleton;
+}
 
 async function ensureDataFile(): Promise<void> {
   await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
@@ -249,18 +278,47 @@ function normalizeProspect(raw: unknown): ProspectRecord | null {
   };
 }
 
-export async function listProspects(): Promise<ProspectRecord[]> {
+async function readStoredRows(): Promise<ProspectRecord[]> {
+  if (usesRedisBackend()) {
+    const redis = getRedis();
+    const raw = await redis.get(REDIS_KEY);
+    if (raw == null) return [];
+    let parsed: unknown;
+    if (Array.isArray(raw)) {
+      parsed = raw;
+    } else if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return [];
+      }
+    } else {
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+    const rows: ProspectRecord[] = [];
+    for (const item of parsed) {
+      const row = normalizeProspect(item);
+      if (row) rows.push(row);
+    }
+    return rows;
+  }
+
+  if (isVercelDeployment() && !usesRedisBackend()) {
+    return [];
+  }
+
   await ensureDataFile();
-  let raw: string;
+  let rawFile: string;
   try {
-    raw = await fs.readFile(DATA_FILE, "utf8");
+    rawFile = await fs.readFile(DATA_FILE, "utf8");
   } catch {
     return [];
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(rawFile);
   } catch {
     return [];
   }
@@ -272,7 +330,21 @@ export async function listProspects(): Promise<ProspectRecord[]> {
     const row = normalizeProspect(item);
     if (row) rows.push(row);
   }
+  return rows;
+}
 
+async function writeStoredRows(rows: ProspectRecord[]): Promise<void> {
+  assertProspectsWritableOnVercel();
+  if (usesRedisBackend()) {
+    await getRedis().set(REDIS_KEY, JSON.stringify(rows));
+    return;
+  }
+  await ensureDataFile();
+  await fs.writeFile(DATA_FILE, JSON.stringify(rows, null, 2), "utf8");
+}
+
+export async function listProspects(): Promise<ProspectRecord[]> {
+  const rows = await readStoredRows();
   rows.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   return rows;
 }
@@ -283,22 +355,11 @@ export async function getProspectById(id: string): Promise<ProspectRecord | null
 }
 
 export async function replaceProspect(updated: ProspectRecord): Promise<boolean> {
-  await ensureDataFile();
-  const raw = await fs.readFile(DATA_FILE, "utf8");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    parsed = [];
-  }
-  const list = Array.isArray(parsed) ? [...parsed] : [];
-  const normalized = list
-    .map((item) => normalizeProspect(item))
-    .filter((r): r is ProspectRecord => r !== null);
-  const idx = normalized.findIndex((p) => p.id === updated.id);
+  const rows = await readStoredRows();
+  const idx = rows.findIndex((p) => p.id === updated.id);
   if (idx === -1) return false;
-  normalized[idx] = updated;
-  await fs.writeFile(DATA_FILE, JSON.stringify(normalized, null, 2), "utf8");
+  rows[idx] = updated;
+  await writeStoredRows(rows);
   return true;
 }
 
@@ -310,15 +371,7 @@ export async function appendProspect(
     initialInquiryNote: string | null;
   }
 ): Promise<ProspectRecord> {
-  await ensureDataFile();
-  const raw = await fs.readFile(DATA_FILE, "utf8");
-  let list: ProspectRecord[];
-  try {
-    list = JSON.parse(raw) as ProspectRecord[];
-    if (!Array.isArray(list)) list = [];
-  } catch {
-    list = [];
-  }
+  const rows = await readStoredRows();
 
   const createdAt = new Date().toISOString();
   const noteHistory: ProspectNote[] =
@@ -343,8 +396,8 @@ export async function appendProspect(
     noteHistory,
   };
 
-  list.push(record);
-  await fs.writeFile(DATA_FILE, JSON.stringify(list, null, 2), "utf8");
+  rows.push(record);
+  await writeStoredRows(rows);
   return record;
 }
 

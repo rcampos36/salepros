@@ -65,7 +65,18 @@ export async function PATCH(request: Request, context: RouteCtx) {
       dealOutcome,
     };
 
-    await replaceProspect(next);
+    try {
+      await replaceProspect(next);
+    } catch (e) {
+      console.error(e);
+      return NextResponse.json(
+        {
+          error:
+            e instanceof Error ? e.message : "Could not save.",
+        },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ prospect: next });
   }
 
@@ -94,6 +105,17 @@ export async function PATCH(request: Request, context: RouteCtx) {
     dealOutcome,
   };
 
-  await replaceProspect(next);
+  try {
+    await replaceProspect(next);
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json(
+      {
+        error:
+          e instanceof Error ? e.message : "Could not save.",
+      },
+      { status: 500 }
+    );
+  }
   return NextResponse.json({ prospect: next });
 }

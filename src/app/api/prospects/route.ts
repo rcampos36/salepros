@@ -6,9 +6,13 @@ export async function GET() {
   try {
     const prospects = await listProspects();
     return NextResponse.json({ prospects });
-  } catch {
+  } catch (e) {
+    console.error(e);
     return NextResponse.json(
-      { error: "Could not load contacts." },
+      {
+        error:
+          e instanceof Error ? e.message : "Could not load contacts.",
+      },
       { status: 500 }
     );
   }
@@ -60,9 +64,13 @@ export async function POST(request: Request) {
       initialInquiryNote,
     });
     return NextResponse.json({ ok: true, id: record.id }, { status: 201 });
-  } catch {
+  } catch (e) {
+    console.error(e);
     return NextResponse.json(
-      { error: "Could not save. Try again." },
+      {
+        error:
+          e instanceof Error ? e.message : "Could not save. Try again.",
+      },
       { status: 500 }
     );
   }

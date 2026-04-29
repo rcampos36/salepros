@@ -33,10 +33,21 @@ export async function POST(request: Request, context: RouteCtx) {
     );
   }
 
-  const prospect = await appendNoteToProspect(id, trimmed);
-  if (!prospect) {
-    return NextResponse.json({ error: "Contact not found." }, { status: 404 });
-  }
+  try {
+    const prospect = await appendNoteToProspect(id, trimmed);
+    if (!prospect) {
+      return NextResponse.json({ error: "Contact not found." }, { status: 404 });
+    }
 
-  return NextResponse.json({ prospect });
+    return NextResponse.json({ prospect });
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json(
+      {
+        error:
+          e instanceof Error ? e.message : "Could not save note.",
+      },
+      { status: 500 }
+    );
+  }
 }
